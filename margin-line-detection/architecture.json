@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "margin-line-detection · LRO Front, Worker, Python Compute",
+    "subtitle": "MLE · system rst · margin line computation for a given tooth",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "submit-path", "label": "Submit and poll", "focus": ["caller", "lro", "db"], "note": "Callers pass an oriented model triangulation plus tooth information and receive an Operation." },
+      { "id": "worker-loop", "label": "Claim and compute", "focus": ["worker", "lro", "compute"], "note": "The worker claims one row, keeps the lease alive, then calls the Python sidecar over localhost:50071." },
+      { "id": "pod", "label": "Inside the worker pod", "focus": ["worker", "compute", "blob"], "note": "No retry loop here. A readiness check keeps the pod out of service until the sidecar answers." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Client Service",
+      "sublabel": "gRPC consumer",
+      "tag": "google.longrunning",
+      "pos": [40, 350],
+      "size": [170, 66],
+      "sources": [
+        { "path": "services/margin-line-detection/api.go", "label": "Compute · GetOperation · WaitOperation" }
+      ]
+    },
+    {
+      "id": "lro",
+      "type": "backend",
+      "label": "margin-line-detection",
+      "sublabel": "SetupHandler · StartLROService",
+      "tag": ":50051",
+      "pos": [400, 360],
+      "size": [200, 84],
+      "sources": [
+        { "path": "services/margin-line-detection/service/main.go", "label": "postgres-lro/lro front" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared spine",
+      "pos": [800, 360],
+      "size": [200, 84]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "margin-line-detection-worker",
+      "sublabel": "poll loop · claim renewal",
+      "tag": "1 CPU · 1Gi",
+      "pos": [400, 700],
+      "size": [200, 76],
+      "sources": [
+        { "path": "services/margin-line-detection-worker/service/worker.go", "line": 120, "label": "single compute call · readiness gated" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "backend",
+      "label": "margin-line-detection-compute",
+      "sublabel": "Python sidecar · same pod",
+      "tag": "5 CPU · 10Gi",
+      "pos": [800, 700],
+      "size": [200, 76],
+      "sources": [
+        { "path": "services/margin-line-detection-worker/k8s/base-overlay/deployment.yaml", "label": "sidecar container on :50071" }
+      ]
+    },
+    {
+      "id": "blob",
+      "type": "external",
+      "label": "Blob Storage",
+      "sublabel": "model triangulations",
+      "tag": "signed URLs",
+      "pos": [40, 700],
+      "size": [170, 66]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Worker Pod · mle-node-pool", "wraps": ["worker", "compute"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "lro", "label": "Compute · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "lro", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "lro", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "compute-call", "from": "worker", "to": "compute", "label": "gRPC localhost:50071", "variant": "emphasis" },
+    { "id": "signed-url", "from": "blob", "to": "worker", "label": "sign blob IDs" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "The only rst family MLE owns",
+      "items": [
+        "Every other MLE service sits under dia, moa, tmo or pen",
+        "The front takes an oriented model triangulation plus tooth information",
+        "The Deployment is contributed by k8s/postgres-lro-patch/lro, not by this directory"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Readiness instead of retries",
+      "items": [
+        "There is no computeRetries loop; the worker calls Compute exactly once per item",
+        "ComputeReadinessCheck probes the sidecar so the pod stays unready until it answers",
+        "GetProductVersion is also pulled from the sidecar and recorded with the result"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Resource shape",
+      "items": [
+        "The sidecar requests only 100m and 2Gi but may burst to 5 CPU and 10Gi",
+        "That is the lightest steady-state footprint of any MLE compute image",
+        "The Go container stays at 1 CPU and 1024Mi, as in every other family"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Operations",
+      "items": [
+        "Datadog monitors live in infrastructure/platform/common/mle/constants.tf",
+        "LRO threshold is 45s under RST-001, temporarily raised and tracked in MLE-2198",
+        "The margin-line-detection-job key under RST-002 has no directory in this repo"
+      ]
+    }
+  ]
+}
