@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "tooth-modeling · Broker, Worker, Storage and an External Adapter",
+    "subtitle": "MLE · system tmo · four services and two different ways in",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "broker", "label": "The broker is the LRO front", "focus": ["caller", "broker", "mq"], "note": "tooth-modeling-broker is hand-rolled like cbct-segmentation-lro. It wires config, auth and background tasks itself." },
+      { "id": "pod", "label": "Worker and sidecar", "focus": ["worker", "compute"], "note": "The worker reaches its sidecar through a hardcoded 127.0.0.1 constant rather than a service name." },
+      { "id": "adapter", "label": "A second, non-LRO door", "focus": ["caller2", "facade", "atm"], "note": "The tooth-modeling service itself imports no LRO package. It is a thin gRPC adapter onto two external services." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Client Service",
+      "sublabel": "gRPC consumer",
+      "tag": "google.longrunning",
+      "pos": [40, 389],
+      "size": [170, 66]
+    },
+    {
+      "id": "broker",
+      "type": "backend",
+      "label": "tooth-modeling-broker",
+      "sublabel": "hand-rolled front · not SetupHandler",
+      "tag": "JWT + service auth",
+      "pos": [380, 380],
+      "size": [240, 84],
+      "sources": [
+        { "path": "services/tooth-modeling-broker/service/main.go", "label": "pkg/postgres-lro · in-repo spine" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared spine",
+      "pos": [800, 380],
+      "size": [240, 84]
+    },
+    {
+      "id": "mq",
+      "type": "messagebus",
+      "label": "Pub/Sub · RocketMQ",
+      "sublabel": "GCP by default, AliCloud branch",
+      "tag": "cloudType switch",
+      "pos": [380, 140],
+      "size": [240, 76]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "tooth-modeling-worker",
+      "sublabel": "pkg/worker-lro · in-repo spine",
+      "tag": "1 CPU · 1Gi",
+      "pos": [380, 720],
+      "size": [240, 80],
+      "sources": [
+        { "path": "services/tooth-modeling-worker/service/worker.go", "label": "127.0.0.1 compute constant" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "backend",
+      "label": "tooth-modeling-compute",
+      "sublabel": "Python sidecar · build-SHA pinned",
+      "tag": "5 CPU · 25Gi",
+      "pos": [800, 720],
+      "size": [240, 80],
+      "sources": [
+        { "path": "services/tooth-modeling-worker/k8s/base-overlay/deployment.yaml", "label": "v-3400-23fa9abce on :50071" }
+      ]
+    },
+    {
+      "id": "storage",
+      "type": "backend",
+      "label": "tooth-modeling-storage",
+      "sublabel": "own gRPC service · no monitor",
+      "tag": "setup.Config",
+      "pos": [40, 722],
+      "size": [240, 76]
+    },
+    {
+      "id": "caller2",
+      "type": "external",
+      "label": "Client Service",
+      "sublabel": "basic or user JWT auth",
+      "tag": "direct gRPC",
+      "pos": [40, 1007],
+      "size": [170, 66]
+    },
+    {
+      "id": "facade",
+      "type": "backend",
+      "label": "tooth-modeling",
+      "sublabel": "adapter · imports no LRO package",
+      "tag": "dual auth",
+      "pos": [380, 1000],
+      "size": [240, 80],
+      "sources": [
+        { "path": "services/tooth-modeling/service/main.go", "label": "DialConnectionWithTracing" }
+      ]
+    },
+    {
+      "id": "atm",
+      "type": "external",
+      "label": "ATM · mesh-conversion",
+      "sublabel": "two external gRPC services",
+      "tag": "outside lightning-core",
+      "pos": [800, 1005],
+      "size": [240, 70]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Worker Pod · mle-node-pool", "wraps": ["worker", "compute"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "broker", "label": "submit · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "broker", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "notify", "from": "broker", "to": "mq", "label": "publish completion", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "broker", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "compute-call", "from": "worker", "to": "compute", "label": "gRPC 127.0.0.1:50071", "variant": "emphasis" },
+    { "id": "persist", "from": "worker", "to": "storage", "label": "store mesh output" },
+    { "id": "adapt", "from": "caller2", "to": "facade", "label": "direct request", "variant": "emphasis" },
+    { "id": "mesh", "from": "facade", "to": "atm", "label": "dial two services", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Four services, three startup shapes",
+      "items": [
+        "Four services ship here: broker, worker, storage and the tooth-modeling adapter",
+        "Three different startup shapes appear across those four binaries",
+        "Only the broker and the worker touch the LRO spine at all"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Both halves ride the in-repo spine",
+      "items": [
+        "The broker imports pkg/postgres-lro, not the external DS-DP-S/postgres-lro module",
+        "The worker imports pkg/worker-lro for the same reason",
+        "cbct-segmentation is the only other MLE family on the in-repo spine"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "An adapter, not a service of its own",
+      "items": [
+        "tooth-modeling dials a mesh conversion service and an ATM tooth-modeling service",
+        "It accepts both basic service auth and a user JWT, so it fronts two caller classes",
+        "It queues nothing and owns no work items, so no Operation is ever created here"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Gaps worth closing",
+      "items": [
+        "No tmo service appears in the Datadog maps, unlike the nine monitored families",
+        "mle-pentest-worker is the only other MLE family with no monitor at all",
+        "The sidecar is pinned by build SHA v-3400-23fa9abce, a fourth pinning convention"
+      ]
+    }
+  ]
+}
