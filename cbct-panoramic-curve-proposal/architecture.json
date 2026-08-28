@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "cbct-panoramic-curve-proposal · LRO Front, Worker, Python Compute",
+    "subtitle": "MLE · system dia · panoramic curve proposals from CBCT scans",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "submit-path", "label": "Submit and poll", "focus": ["caller", "lro", "db"], "note": "Compute, GetOperation and WaitOperation on port 50051. WaitOperation is capped at 10 minutes." },
+      { "id": "worker-loop", "label": "Claim and compute", "focus": ["worker", "lro", "compute"], "note": "The worker claims one row, keeps the lease alive, then calls the Python sidecar over localhost:50071." },
+      { "id": "pod", "label": "Inside the worker pod", "focus": ["worker", "compute", "blob"], "note": "The sidecar asks for 8000Mi and may burst to 20Gi, a mid-range ceiling for an MLE compute image." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Client Service",
+      "sublabel": "gRPC consumer",
+      "tag": "google.longrunning",
+      "pos": [40, 350],
+      "size": [170, 66],
+      "sources": [
+        { "path": "services/cbct-panoramic-curve-proposal/api.go", "label": "Compute · GetOperation · WaitOperation" }
+      ]
+    },
+    {
+      "id": "lro",
+      "type": "backend",
+      "label": "cbct-panoramic-curve-proposal",
+      "sublabel": "SetupHandler · StartLROService",
+      "tag": ":50051",
+      "pos": [400, 360],
+      "size": [270, 84],
+      "sources": [
+        { "path": "services/cbct-panoramic-curve-proposal/service/main.go", "label": "postgres-lro/lro front" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared spine",
+      "pos": [800, 360],
+      "size": [270, 84]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "cbct-panoramic-curve-proposal-worker",
+      "sublabel": "poll loop · claim renewal",
+      "tag": "1 CPU · 1Gi",
+      "pos": [400, 700],
+      "size": [270, 76],
+      "sources": [
+        { "path": "services/cbct-panoramic-curve-proposal-worker/service/worker.go", "label": "compute bridge · 15 retries" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "backend",
+      "label": "cbct-panoramic-curve-proposal-compute",
+      "sublabel": "Python sidecar · same pod",
+      "tag": "5 CPU · 20Gi",
+      "pos": [800, 700],
+      "size": [270, 76],
+      "sources": [
+        { "path": "services/cbct-panoramic-curve-proposal-worker/k8s/base-overlay/deployment.yaml", "label": "sidecar container on :50071" }
+      ]
+    },
+    {
+      "id": "blob",
+      "type": "external",
+      "label": "Blob Storage",
+      "sublabel": "CBCT volumes",
+      "tag": "signed URLs",
+      "pos": [40, 700],
+      "size": [170, 66]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Worker Pod · mle-node-pool", "wraps": ["worker", "compute"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "lro", "label": "Compute · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "lro", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "lro", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "compute-call", "from": "worker", "to": "compute", "label": "gRPC localhost:50071", "variant": "emphasis" },
+    { "id": "signed-url", "from": "blob", "to": "worker", "label": "sign blob IDs" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Same spine as every MLE LRO service",
+      "items": [
+        "main.go supplies only serviceName, validateRequest and a whitelist",
+        "Queue mechanics and the Operations API come from postgres-lro/lro",
+        "The Deployment is contributed by k8s/postgres-lro-patch/lro, not by this directory"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Worker to sidecar",
+      "items": [
+        "Cold start is slow, so the compute call is retried 15 times at 1s intervals",
+        "Only codes.Unavailable is retried; any other error fails the work item immediately",
+        "Blob IDs become signed URLs because the Python side holds no storage credentials"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Resource shape",
+      "items": [
+        "The sidecar requests 8000Mi and may burst to 20Gi against a 5 CPU limit",
+        "The Go container stays at 1 CPU and 1024Mi, as in every other family",
+        "A last-failure-volume is mounted into the sidecar so a crashed run leaves a trace"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Operations",
+      "items": [
+        "Datadog monitors live in infrastructure/platform/common/mle/constants.tf",
+        "LRO duration threshold is 210s under opdoc DIA-029; the worker is DIA-030",
+        "Older cbctai-panoramic-curve-proposal monitor keys still point at ene-services"
+      ]
+    }
+  ]
+}
