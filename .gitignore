@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# Agent tooling state
+.ai-toolkit/
+
+# archify visual-check output (QA byproduct, regenerable)
+visual-check/
