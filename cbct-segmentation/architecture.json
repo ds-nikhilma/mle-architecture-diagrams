@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "cbct-segmentation · Hand-Rolled LRO Front, GPU Worker, Storage Tier",
+    "subtitle": "MLE · system dia · the only GPU workload in the fleet",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "front", "label": "A front built by hand", "focus": ["caller", "lro", "mq"], "note": "This front does not call lro.SetupHandler. It wires config, auth, background tasks and a message queue itself." },
+      { "id": "gpu", "label": "The GPU pod", "focus": ["worker", "compute"], "note": "The only MLE pod that tolerates nodeType mle_gpu and requests an NVIDIA GPU. It deploys with Recreate, not RollingUpdate." },
+      { "id": "storage", "label": "A dedicated storage tier", "focus": ["worker", "storage"], "note": "cbct-segmentation-storage is its own gRPC service. It is the only storage tier MLE monitors; tooth-modeling-storage has no monitor." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Client Service",
+      "sublabel": "gRPC consumer",
+      "tag": "google.longrunning",
+      "pos": [40, 389],
+      "size": [170, 66],
+      "sources": [
+        { "path": "services/cbct-segmentation-lro/api.go", "label": "Compute · GetOperation" }
+      ]
+    },
+    {
+      "id": "lro",
+      "type": "backend",
+      "label": "cbct-segmentation-lro",
+      "sublabel": "hand-rolled front · not SetupHandler",
+      "tag": "JWT + service auth",
+      "pos": [380, 380],
+      "size": [240, 84],
+      "sources": [
+        { "path": "services/cbct-segmentation-lro/service/main.go", "label": "pkg/postgres-lro · in-repo spine" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared spine",
+      "pos": [800, 380],
+      "size": [240, 84]
+    },
+    {
+      "id": "mq",
+      "type": "messagebus",
+      "label": "Pub/Sub · RocketMQ",
+      "sublabel": "GCP by default, AliCloud branch",
+      "tag": "cloudType switch",
+      "pos": [380, 140],
+      "size": [240, 76]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "cbct-segmentation-worker",
+      "sublabel": "pkg/worker-lro · in-repo spine",
+      "tag": "1 CPU · 1Gi",
+      "pos": [380, 720],
+      "size": [240, 80],
+      "sources": [
+        { "path": "services/cbct-segmentation-worker/service/worker.go", "label": "HTTP compute bridge" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "backend",
+      "label": "cbct-segmentation-compute",
+      "sublabel": "Python sidecar · digest pinned",
+      "tag": "5 CPU · 1 GPU",
+      "pos": [800, 720],
+      "size": [240, 80],
+      "sources": [
+        { "path": "services/cbct-segmentation-worker/k8s/base-overlay/deployment.yaml", "line": 46, "label": "nvidia.com/gpu: 1" }
+      ]
+    },
+    {
+      "id": "storage",
+      "type": "backend",
+      "label": "cbct-segmentation-storage",
+      "sublabel": "own gRPC service · dual auth",
+      "tag": "DIA-011",
+      "pos": [40, 722],
+      "size": [240, 76],
+      "sources": [
+        { "path": "services/cbct-segmentation-storage/service/main.go", "label": "setup.Config · no LRO spine" }
+      ]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Worker Pod · mle_gpu node", "wraps": ["worker", "compute"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "lro", "label": "Compute · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "lro", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "notify", "from": "lro", "to": "mq", "label": "publish completion", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "lro", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "compute-call", "from": "worker", "to": "compute", "label": "HTTPS · 3 min timeout", "variant": "emphasis" },
+    { "id": "persist", "from": "worker", "to": "storage", "label": "store segmentation" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "One of two hand-rolled fronts",
+      "items": [
+        "It skips lro.SetupHandler and wires config, auth and background tasks by hand",
+        "It rides pkg/postgres-lro in this repo, not the external DS-DP-S/postgres-lro module",
+        "tooth-modeling-broker is the only other MLE front built this way"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "The only GPU workload in MLE",
+      "items": [
+        "The pod tolerates nodeType mle_gpu and nvidia.com/gpu, unlike every other MLE pod",
+        "The sidecar limit block asks for nvidia.com/gpu: 1 alongside 5 CPU",
+        "Deployment strategy is Recreate, because two pods cannot share one GPU"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Compute over HTTP, not gRPC",
+      "items": [
+        "The worker calls api-clients-go over HTTPS with a 3 minute client timeout",
+        "Every other MLE worker speaks gRPC to localhost:50071 instead",
+        "The image is digest pinned at 20250204@sha256:af1a512a, the only digest pin in MLE"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Two things worth a second look",
+      "items": [
+        "The sidecar limits CPU to 5 but sets no memory limit, while requesting 25Gi",
+        "That same drift exists in parl-detection-worker and nowhere else",
+        "The container is named cbct-segmentation-compute but runs the anatomy-segmentation image"
+      ]
+    }
+  ]
+}
