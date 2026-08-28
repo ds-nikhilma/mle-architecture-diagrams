@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "cbct-anatomy-segmentation · Two-Tier LRO Chain",
+    "subtitle": "MLE · system dia · anatomy segmentation composed from tooth-recognition and a second LRO tier",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "tier1", "label": "Tier 1 · orchestration", "focus": ["caller", "t1", "t1w"], "note": "The tier 1 worker owns no model. It resolves versions and drives two downstream LRO services." },
+      { "id": "tier2", "label": "Tier 2 · computation", "focus": ["t2", "t2w", "compute"], "note": "The computation tier is a full LRO family of its own, with the Python sidecar in its worker pod." },
+      { "id": "queue", "label": "One queue, two tiers", "focus": ["t1", "t2", "db"], "note": "Both tiers enqueue into the same PostgreSQL spine; the second is just another work item type." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Client Service",
+      "sublabel": "gRPC consumer",
+      "tag": "google.longrunning",
+      "pos": [40, 300],
+      "size": [200, 70],
+      "sources": [
+        { "path": "services/cbct-anatomy-segmentation/api.go", "label": "Compute · GetOperation" }
+      ]
+    },
+    {
+      "id": "t1",
+      "type": "backend",
+      "label": "cbct-anatomy-segmentation",
+      "sublabel": "tier 1 front · SetupHandler",
+      "tag": ":50051",
+      "pos": [340, 300],
+      "size": [300, 84],
+      "sources": [
+        { "path": "services/cbct-anatomy-segmentation/service/main.go", "label": "postgres-lro/lro front" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared by both tiers",
+      "pos": [1080, 560],
+      "size": [240, 84]
+    },
+    {
+      "id": "tr",
+      "type": "external",
+      "label": "tooth-recognition",
+      "sublabel": "own LRO family",
+      "tag": "version-mapped",
+      "pos": [40, 560],
+      "size": [200, 70]
+    },
+    {
+      "id": "t1w",
+      "type": "backend",
+      "label": "cbct-anatomy-segmentation-worker",
+      "sublabel": "orchestrator · no sidecar",
+      "tag": "version-mapped fan-out",
+      "pos": [340, 560],
+      "size": [300, 84],
+      "sources": [
+        { "path": "services/cbct-anatomy-segmentation-worker/service/worker.go", "line": 22, "label": "two downstream service names" }
+      ]
+    },
+    {
+      "id": "t2",
+      "type": "backend",
+      "label": "cbct-anatomy-segmentation-computation",
+      "sublabel": "tier 2 front · SetupHandler",
+      "tag": ":50051",
+      "pos": [340, 830],
+      "size": [300, 84],
+      "sources": [
+        { "path": "services/cbct-anatomy-segmentation-computation/service/main.go", "label": "second postgres-lro/lro front" }
+      ]
+    },
+    {
+      "id": "t2w",
+      "type": "backend",
+      "label": "cbct-anatomy-segmentation-computation-worker",
+      "sublabel": "poll loop · claim renewal",
+      "tag": "1 CPU · 1Gi",
+      "pos": [320, 1100],
+      "size": [340, 84],
+      "sources": [
+        { "path": "services/cbct-anatomy-segmentation-computation-worker/service/worker.go", "label": "compute bridge" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "backend",
+      "label": "anatomy-segmentation-compute",
+      "sublabel": "Python sidecar · pinned :20260513",
+      "tag": "5 CPU · 30Gi",
+      "pos": [820, 1100],
+      "size": [300, 84],
+      "sources": [
+        { "path": "services/cbct-anatomy-segmentation-computation-worker/k8s/base-overlay/deployment.yaml", "line": 27, "label": "v4.0 image on :50071" }
+      ]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Tier 2 worker pod · mle-node-pool", "wraps": ["t2w", "compute"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "t1", "label": "Compute · GetOperation", "variant": "emphasis", "labelDy": 73 },
+    { "id": "t1-queue", "from": "t1", "to": "db", "label": "enqueue tier 1 item", "variant": "emphasis" },
+    { "id": "t1-claim", "from": "t1w", "to": "t1", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "stage1", "from": "t1w", "to": "tr", "label": "stage 1 · Compute", "variant": "emphasis" },
+    { "id": "stage2", "from": "t1w", "to": "t2", "label": "stage 2 · Compute", "variant": "emphasis", "labelDy": 80 },
+    { "id": "t2-queue", "from": "t2", "to": "db", "label": "enqueue tier 2 item", "variant": "emphasis" },
+    { "id": "t2-claim", "from": "t2w", "to": "t2", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "compute-call", "from": "t2w", "to": "compute", "label": "gRPC localhost:50071", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Two complete LRO families, stacked",
+      "items": [
+        "cbct-anatomy-segmentation and -computation are each a front plus a worker",
+        "Both fronts are the same twenty-line lro.SetupHandler setup, so nothing is bespoke",
+        "Both also call SetExtractExternalRefs, which the plain dia families do not"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Where the orchestration lives",
+      "items": [
+        "The tier 1 worker has no client/ or proto/ directory and no compute container",
+        "It resolves tooth-recognition first, then cbct-anatomy-segmentation-computation",
+        "parl-worker is the only other MLE worker with this exact shape"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Version mapping is a hard gate",
+      "items": [
+        "A per-downstream version map is read for the requested semantic version",
+        "A miss raises no version mapping found for the service, it does not fall back",
+        "Both downstream names are constants at worker.go lines 22 and 23"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "The heaviest pod MLE runs",
+      "items": [
+        "The tier 2 sidecar requests 3 CPU and 20Gi and may burst to 5 CPU and 30Gi",
+        "That is the largest memory ceiling of any MLE compute container",
+        "LRO threshold is 17 minutes under DIA-019, matched only by cbct-segmentation"
+      ]
+    }
+  ]
+}
