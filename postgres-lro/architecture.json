@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "postgres-lro · Claim-Based Work Queue",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "submit-path", "label": "Submit and poll", "focus": ["caller", "lro", "db"], "note": "A client submits Compute and polls GetOperation while the row lives in workitems_active." },
+      { "id": "worker-loop", "label": "Worker loop", "focus": ["worker", "lro", "task"], "note": "The worker claims one row, renews the lease, runs the task, then releases it." },
+      { "id": "maintenance", "label": "Maintenance", "focus": ["maint", "db", "bus"], "note": "In-process cron work and storage notifications retire rows nobody will finish." }
+    ]
+  },
+  "components": [
+    { "id": "maint", "type": "backend", "label": "Background Tasks", "sublabel": "cleanup · GC · cache TTL", "pos": [400, 120], "size": [190, 66], "tag": "in-process cron" },
+    { "id": "caller", "type": "external", "label": "Client Service", "sublabel": "gRPC consumer", "pos": [40, 350], "size": [170, 66], "tag": "google.longrunning" },
+    { "id": "bus", "type": "messagebus", "label": "Pub/Sub · RocketMQ", "sublabel": "storage notifications", "pos": [40, 500], "size": [170, 66], "tag": "CT_PERMANENTLY_DELETED" },
+    { "id": "lro", "type": "backend", "label": "LRO Service", "sublabel": "Operations + InternalService", "pos": [400, 360], "size": [200, 84] },
+    { "id": "db", "type": "database", "label": "PostgreSQL", "sublabel": "workitems_active / _inactive", "pos": [800, 360], "size": [200, 84] },
+    { "id": "worker", "type": "backend", "label": "Worker Runtime", "sublabel": "poll loop · claim renewal", "pos": [400, 700], "size": [200, 76] },
+    { "id": "task", "type": "backend", "label": "Compute Task", "sublabel": "Task.Run(ctx, item)", "pos": [800, 700], "size": [200, 76] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "LRO Service · lro module", "wraps": ["lro", "maint"] },
+    { "kind": "region", "label": "Worker Pod · worker module", "wraps": ["worker", "task"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "lro", "label": "Compute · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "lro", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "lro", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "run-task", "from": "worker", "to": "task", "label": "Run(ctx, input)" },
+    { "id": "retire", "from": "maint", "to": "db", "label": "expire · exhaust · collect", "fromSide": "right", "toSide": "top", "via": [[900, 153]] },
+    { "id": "storage-delete", "from": "bus", "to": "lro", "label": "delete work item", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Queue", "items": ["One table pair: workitems_active drains into workitems_inactive", "A claim is a single UPDATE guarded by FOR UPDATE SKIP LOCKED", "Rows are ordered by created_at and filtered by expires_at and worker version"] },
+    { "dot": "emerald", "title": "Worker contract", "items": ["ClaimWorkItem returns input plus metadata, or nothing when the queue is empty", "RefreshClaim extends the 7s lease every 5s while Task.Run executes", "Success and error both release the row into workitems_inactive"] },
+    { "dot": "amber", "title": "Recovery", "items": ["A lapsed claim is re-claimable while claimed_count stays under MAX_CLAIM_RETRIES", "Background tasks retire expired and exhausted rows on a fixed interval", "Permanent storage deletes remove the work items that referenced the object"] }
+  ]
+}

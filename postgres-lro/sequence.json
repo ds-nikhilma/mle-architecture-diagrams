@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "postgres-lro · Worker Claim, Renew, Release",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [820, 980],
+    "views": [
+      { "id": "claim", "label": "Claim one row", "focus": ["worker", "lro", "db"], "note": "One poll iteration claims at most one row, or returns nothing when the queue is empty." },
+      { "id": "lease", "label": "Lease and task", "focus": ["worker", "renewal", "task"], "note": "A renewal goroutine keeps the 7s lease alive on a 5s tick while Task.Run executes." },
+      { "id": "release", "label": "Two release paths", "focus": ["worker", "renewal", "lro"], "note": "Success stops renewal after the release; error stops it before, so no refresh races the write." }
+    ]
+  },
+  "participants": [
+    { "id": "worker", "type": "backend", "label": "Worker Runtime", "sublabel": "workerLoop" },
+    { "id": "renewal", "type": "backend", "label": "Claim Renewal", "sublabel": "goroutine" },
+    { "id": "task", "type": "backend", "label": "Compute Task", "sublabel": "Task.Run" },
+    { "id": "lro", "type": "backend", "label": "InternalService", "sublabel": "gRPC" },
+    { "id": "db", "type": "database", "label": "PostgreSQL", "sublabel": "workitems_active" }
+  ],
+  "segments": [
+    { "from": 150, "to": 330, "label": "Claim one row" },
+    { "from": 344, "to": 560, "label": "Lease and run" },
+    { "from": 574, "to": 706, "label": "Success path" },
+    { "from": 720, "to": 852, "label": "Error path" }
+  ],
+  "messages": [
+    { "from": "worker", "to": "lro", "y": 180, "label": "ClaimWorkItem", "variant": "emphasis" },
+    { "from": "lro", "to": "db", "y": 222, "label": "SKIP LOCKED", "variant": "emphasis" },
+    { "from": "db", "to": "lro", "y": 264, "label": "row, or none", "variant": "return" },
+    { "from": "lro", "to": "worker", "y": 306, "label": "input + metadata", "variant": "return" },
+    { "from": "worker", "to": "renewal", "y": 368, "label": "startClaimRenewal" },
+    { "from": "worker", "to": "task", "y": 410, "label": "Task.Run(ctx, input)", "variant": "emphasis" },
+    { "from": "renewal", "to": "lro", "y": 452, "label": "RefreshClaim every 5s", "variant": "dashed" },
+    { "from": "lro", "to": "db", "y": 494, "label": "extend the lease", "variant": "dashed" },
+    { "from": "task", "to": "worker", "y": 536, "label": "result, or error", "variant": "return" },
+    { "from": "worker", "to": "lro", "y": 598, "label": "ReleaseWorkItemOnSuccess", "variant": "emphasis" },
+    { "from": "lro", "to": "db", "y": 640, "label": "move to inactive", "variant": "emphasis" },
+    { "from": "worker", "to": "renewal", "y": 682, "label": "stop renewal last" },
+    { "from": "worker", "to": "renewal", "y": 744, "label": "stop renewal first" },
+    { "from": "worker", "to": "lro", "y": 786, "label": "ReleaseWorkItemOnError", "variant": "emphasis" },
+    { "from": "lro", "to": "db", "y": 828, "label": "record failed", "variant": "emphasis" }
+  ],
+  "activations": [
+    { "participant": "lro", "from": 174, "to": 314, "type": "backend" },
+    { "participant": "db", "from": 216, "to": 272, "type": "database" },
+    { "participant": "renewal", "from": 362, "to": 700, "type": "backend" },
+    { "participant": "task", "from": 404, "to": 544, "type": "backend" },
+    { "participant": "lro", "from": 446, "to": 502, "type": "backend" },
+    { "participant": "lro", "from": 592, "to": 654, "type": "backend" },
+    { "participant": "renewal", "from": 738, "to": 800, "type": "backend" },
+    { "participant": "lro", "from": 780, "to": 842, "type": "backend" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "One row per iteration", "items": ["Each workerLoop pass opens its own root span and claims at most one row", "An empty queue returns nothing and the loop backs off by claimRetryTimeout", "A claim error uses the same backoff, so a sick database is not hot-polled"] },
+    { "dot": "emerald", "title": "The renewal goroutine", "items": ["startClaimRenewal spawns a goroutine before Task.Run is entered", "It selects between its stop channel and a 5s timer that calls RefreshClaim", "Each refresh pushes claimed_until forward by the 7s claim duration"] },
+    { "dot": "rose", "title": "Why the stop order differs", "items": ["On success the release is written first and renewal is stopped afterwards", "On error renewal is stopped first so no refresh can revive a dying claim", "Either way the row leaves workitems_active exactly once"] },
+    { "dot": "slate", "title": "Concurrency", "items": ["maxConcurrency identical loops run against the same queue", "SKIP LOCKED is what keeps them from claiming the same row", "The process then blocks on ctx.Done and lets the loops drain"] }
+  ]
+}

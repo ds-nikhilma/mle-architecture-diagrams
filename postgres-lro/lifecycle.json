@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "postgres-lro · Work Item Status Lifecycle",
+    "quality_profile": "showcase",
+    "viewBox": [980, 720],
+    "views": [
+      { "id": "happy-path", "label": "Claim to completion", "focus": ["queued", "running", "done"], "note": "A row is claimed out of workitems_active, runs under a lease, and is released as done." },
+      { "id": "lease-recovery", "label": "Lease recovery", "focus": ["running", "lapsed", "failed"], "note": "A lease that stops being renewed makes the row claimable again until the retry budget runs out." },
+      { "id": "exits", "label": "Exits without a result", "focus": ["queued", "expired", "canceled"], "note": "Queue expiry and caller cancellation end the item before any compute result exists." }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "Status rail" },
+    { "id": "recovery", "label": "Claim recovery" },
+    { "id": "terminal", "label": "Terminal · workitems_inactive" }
+  ],
+  "states": [
+    { "id": "queued", "type": "start", "label": "Queued", "sublabel": "row in workitems_active", "lane": "main", "col": 0, "step": "01", "tag": "claimable" },
+    { "id": "running", "type": "active", "label": "Running", "sublabel": "claimed_by holds a lease", "lane": "main", "col": 1, "step": "02", "tag": "claimed_until" },
+    { "id": "done", "type": "success", "label": "Done", "sublabel": "output_data written", "lane": "main", "col": 2, "step": "03", "tag": "terminal" },
+    { "id": "lapsed", "type": "failure", "label": "Claim Lapsed", "sublabel": "NOW() > claimed_until", "lane": "recovery", "col": 2, "tag": "re-claimable" },
+    { "id": "expired", "type": "failure", "label": "Expired", "sublabel": "MAX_QUEUE_DURATION", "lane": "terminal", "col": 0, "tag": "DeadlineExceeded" },
+    { "id": "failed", "type": "failure", "label": "Failed", "sublabel": "task error or retries spent", "lane": "terminal", "col": 1, "tag": "terminal" },
+    { "id": "canceled", "type": "failure", "label": "Canceled", "sublabel": "caller stopped the operation", "lane": "terminal", "col": 2, "tag": "terminal" }
+  ],
+  "transitions": [
+    { "id": "claim", "from": "queued", "to": "running", "label": "ClaimWorkItem", "variant": "emphasis", "route": "straight", "fromSide": "right", "toSide": "left", "labelAt": [171, 205] },
+    { "id": "success", "from": "running", "to": "done", "label": "ReleaseWorkItemOnSuccess", "variant": "emphasis", "route": "straight", "fromSide": "right", "toSide": "left", "labelAt": [340, 205] },
+    { "id": "lease-lost", "from": "running", "to": "lapsed", "label": "RefreshClaim stopped", "fromSide": "bottom", "toSide": "top" },
+    { "id": "task-error", "from": "running", "to": "failed", "label": "ReleaseWorkItemOnError", "fromSide": "bottom", "toSide": "top" },
+    { "id": "reclaim", "from": "lapsed", "to": "running", "label": "re-claim under retry limit", "variant": "emphasis", "fromSide": "right", "toSide": "top", "via": [[810, 307], [810, 80], [248, 80]], "labelAt": [560, 112] },
+    { "id": "exhausted", "from": "lapsed", "to": "failed", "label": "retry limit reached", "fromSide": "bottom", "toSide": "right", "via": [[710, 410], [633, 410], [633, 479]], "labelAt": [790, 372] },
+    { "id": "queue-expiry", "from": "queued", "to": "expired", "label": "expires_at passed", "fromSide": "bottom", "toSide": "left", "via": [[94, 479]], "labelAt": [200, 440] },
+    { "id": "cancel", "from": "queued", "to": "canceled", "label": "CancelOperation", "fromSide": "left", "toSide": "bottom", "via": [[18, 157], [18, 542], [710, 542]], "labelAt": [364, 570] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Claiming", "items": ["Only queued rows and lapsed running rows satisfy the claim predicate", "One UPDATE guarded by FOR UPDATE SKIP LOCKED moves queued to running", "Every claim increments claimed_count and stamps claimed_by"] },
+    { "dot": "emerald", "title": "The lease", "items": ["claimed_until is set to NOW() plus the 7s claim duration", "The worker calls RefreshClaim every 5s for as long as the task runs", "A lease that stops being renewed returns the row to the claimable set"] },
+    { "dot": "rose", "title": "Ending the item", "items": ["Both release paths move the row from workitems_active into workitems_inactive", "An exhausted retry budget is recorded as failed, not as a distinct status", "Cancel drains any active row, whether it is queued or already running"] },
+    { "dot": "slate", "title": "Outside the machine", "items": ["A storage purge soft-deletes the item and stamps deleted_at", "It applies to an active row and to an already terminal one alike", "So deleted is a retention state, not a step in this flow"] }
+  ]
+}
