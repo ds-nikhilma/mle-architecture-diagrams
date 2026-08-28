@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "tooth-recognition · LRO Front, Worker, Python Compute",
+    "subtitle": "MLE · system dia · tooth recognition from CBCT scans",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "submit-path", "label": "Submit and poll", "focus": ["caller", "lro", "db"], "note": "Called both directly and by parl-worker, which runs this first and feeds the result to parl-detection." },
+      { "id": "worker-loop", "label": "Claim and compute", "focus": ["worker", "lro", "compute"], "note": "The worker claims one row, keeps the lease alive, then calls the Python sidecar over localhost:50071." },
+      { "id": "pod", "label": "Inside the worker pod", "focus": ["worker", "compute", "blob"], "note": "The Go container declares no resource limits here, and the sidecar image is pinned to a fixed date tag." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Client · parl-worker",
+      "sublabel": "gRPC consumer",
+      "tag": "google.longrunning",
+      "pos": [40, 350],
+      "size": [170, 66],
+      "sources": [
+        { "path": "services/tooth-recognition/api.go", "label": "Compute · GetOperation · WaitOperation" }
+      ]
+    },
+    {
+      "id": "lro",
+      "type": "backend",
+      "label": "tooth-recognition",
+      "sublabel": "SetupHandler · StartLROService",
+      "tag": ":50051",
+      "pos": [400, 360],
+      "size": [200, 84],
+      "sources": [
+        { "path": "services/tooth-recognition/service/main.go", "label": "postgres-lro/lro front" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared spine",
+      "pos": [800, 360],
+      "size": [200, 84]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "tooth-recognition-worker",
+      "sublabel": "poll loop · claim renewal",
+      "tag": "no limits set",
+      "pos": [400, 700],
+      "size": [200, 76],
+      "sources": [
+        { "path": "services/tooth-recognition-worker/service/worker.go", "label": "compute bridge · 15 retries" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "backend",
+      "label": "tooth-recognition-compute",
+      "sublabel": "Python sidecar · pinned :20250401",
+      "tag": "5 CPU · 25Gi",
+      "pos": [800, 700],
+      "size": [200, 76],
+      "sources": [
+        { "path": "services/tooth-recognition-worker/k8s/base-overlay/deployment.yaml", "label": "sidecar container on :50071" }
+      ]
+    },
+    {
+      "id": "blob",
+      "type": "external",
+      "label": "Blob Storage",
+      "sublabel": "CBCT volumes",
+      "tag": "signed URLs",
+      "pos": [40, 700],
+      "size": [170, 66]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Worker Pod · mle-node-pool", "wraps": ["worker", "compute"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "lro", "label": "Compute · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "lro", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "lro", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "compute-call", "from": "worker", "to": "compute", "label": "gRPC localhost:50071", "variant": "emphasis" },
+    { "id": "signed-url", "from": "blob", "to": "worker", "label": "sign blob IDs" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Stage one of the PARL fan-out",
+      "items": [
+        "parl-worker runs this first, then passes the result into parl-detection",
+        "The front is the standard twenty-line postgres-lro/lro setup",
+        "It is also called directly, so it is not exclusively an orchestrated dependency"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Worker to sidecar",
+      "items": [
+        "Cold start is slow, so the compute call is retried 15 times at 1s intervals",
+        "Only codes.Unavailable is retried; any other error fails the work item immediately",
+        "Blob IDs become signed URLs because the Python side holds no storage credentials"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Two drifts worth fixing",
+      "items": [
+        "The Go container declares no resources block at all, so it is unbounded on the node",
+        "The sidecar image is pinned to cbctai-tooth-recognition-compute:20250401",
+        "parl-detection-worker shares both; parl-worker also declares no resources block"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Operations",
+      "items": [
+        "Datadog monitors live in infrastructure/platform/common/mle/constants.tf",
+        "LRO duration threshold is 180s under opdoc DIA-025; the worker is DIA-026",
+        "The sidecar requests 4500m and 25Gi, matching its 5 CPU and 25Gi limits"
+      ]
+    }
+  ]
+}
