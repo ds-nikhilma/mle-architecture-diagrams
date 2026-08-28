@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "parl-detection · LRO Front, Worker, Python Compute",
+    "subtitle": "MLE · system dia · periapical radiolucency detection in dental radiographs",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "submit-path", "label": "Submit and poll", "focus": ["caller", "lro", "db"], "note": "Usually the caller is parl-worker, not an end product. This is stage two of the PARL fan-out." },
+      { "id": "worker-loop", "label": "Claim and compute", "focus": ["worker", "lro", "compute"], "note": "The worker claims one row, keeps the lease alive, then calls the Python sidecar over localhost:50071." },
+      { "id": "pod", "label": "Inside the worker pod", "focus": ["worker", "compute", "blob"], "note": "The Go container declares no resource limits here, and the sidecar image is pinned to a fixed date tag." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "parl-worker",
+      "sublabel": "orchestrator · stage 2 caller",
+      "tag": "google.longrunning",
+      "pos": [40, 350],
+      "size": [170, 66],
+      "sources": [
+        { "path": "services/parl-detection/api.go", "label": "Compute · GetOperation · WaitOperation" }
+      ]
+    },
+    {
+      "id": "lro",
+      "type": "backend",
+      "label": "parl-detection",
+      "sublabel": "SetupHandler · StartLROService",
+      "tag": ":50051",
+      "pos": [400, 360],
+      "size": [200, 84],
+      "sources": [
+        { "path": "services/parl-detection/service/main.go", "label": "postgres-lro/lro front" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared spine",
+      "pos": [800, 360],
+      "size": [200, 84]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "parl-detection-worker",
+      "sublabel": "poll loop · claim renewal",
+      "tag": "no limits set",
+      "pos": [400, 700],
+      "size": [200, 76],
+      "sources": [
+        { "path": "services/parl-detection-worker/service/main.go", "line": 31, "label": "inline ComputeReadinessCheck" },
+        { "path": "services/parl-detection-worker/service/worker.go", "line": 94, "label": "single compute call" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "backend",
+      "label": "parl-detection-compute",
+      "sublabel": "Python sidecar · pinned :20250717",
+      "tag": "4500m · 25Gi",
+      "pos": [800, 700],
+      "size": [200, 76],
+      "sources": [
+        { "path": "services/parl-detection-worker/k8s/base-overlay/deployment.yaml", "label": "sidecar container on :50071" }
+      ]
+    },
+    {
+      "id": "blob",
+      "type": "external",
+      "label": "Blob Storage",
+      "sublabel": "radiograph payloads",
+      "tag": "signed URLs",
+      "pos": [40, 700],
+      "size": [170, 66]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Worker Pod · mle-node-pool", "wraps": ["worker", "compute"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "lro", "label": "Compute · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "lro", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "lro", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "compute-call", "from": "worker", "to": "compute", "label": "gRPC localhost:50071", "variant": "emphasis" },
+    { "id": "signed-url", "from": "blob", "to": "worker", "label": "sign blob IDs" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Stage two of a two-stage flow",
+      "items": [
+        "parl-worker calls tooth-recognition first, then feeds its result into this service",
+        "The front itself is the standard twenty-line postgres-lro/lro setup",
+        "It is still directly callable; nothing about the front assumes an orchestrator"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Readiness instead of retries",
+      "items": [
+        "There is no computeRetries loop; the worker calls Compute exactly once per item",
+        "main.go passes an inline ComputeReadinessCheck closure into ProcessWorkItemTaskConfig",
+        "The pod stays unready until the sidecar answers, so cold start never reaches a claim"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Two drifts worth fixing",
+      "items": [
+        "The Go container declares no resources block at all, so it is unbounded on the node",
+        "The sidecar limits CPU to 5 but sets no memory limit, while requesting 25Gi",
+        "Its image is pinned to cbctai-periapical-radiolucency-detection-compute:20250717"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Operations",
+      "items": [
+        "Datadog monitors live in infrastructure/platform/common/mle/constants.tf",
+        "LRO duration threshold is 180s under opdoc DIA-023; the worker is DIA-024",
+        "The parent parl service is DIA-021 at 300s and parl-worker is DIA-022"
+      ]
+    }
+  ]
+}
