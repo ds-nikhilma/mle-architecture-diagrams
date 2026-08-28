@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "parl · LRO Front and Cross-Service Orchestrator",
+    "subtitle": "MLE · system dia · periapical radiolucency, composed from two LRO services",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/DS-DP-S/lightning-core",
+      "revision": "3318998a9a4d6618f053d776a1f2971402fd5d3a"
+    },
+    "views": [
+      { "id": "submit-path", "label": "Submit and poll", "focus": ["caller", "lro", "db"], "note": "The front is the standard postgres-lro/lro setup, but the verbs are CreatePARL rather than Compute." },
+      { "id": "fan-out", "label": "Two-stage fan-out", "focus": ["worker", "tr", "pd"], "note": "tooth-recognition runs first; its result becomes an input field of the parl-detection request." },
+      { "id": "no-sidecar", "label": "No Python sidecar", "focus": ["worker", "lro"], "note": "This is one of two MLE workers with no compute container. All the ML work happens downstream." }
+    ]
+  },
+  "components": [
+    {
+      "id": "caller",
+      "type": "external",
+      "label": "Client Service",
+      "sublabel": "gRPC consumer",
+      "tag": "google.longrunning",
+      "pos": [40, 350],
+      "size": [170, 66],
+      "sources": [
+        { "path": "services/parl/api.go", "label": "CreatePARL · GetOperation" }
+      ]
+    },
+    {
+      "id": "lro",
+      "type": "backend",
+      "label": "parl",
+      "sublabel": "SetupHandler · StartLROService",
+      "tag": ":50051",
+      "pos": [400, 360],
+      "size": [200, 84],
+      "sources": [
+        { "path": "services/parl/service/main.go", "label": "postgres-lro/lro front" }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "workitems_active / _inactive",
+      "tag": "shared spine",
+      "pos": [800, 360],
+      "size": [200, 84]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "parl-worker",
+      "sublabel": "orchestrator · no sidecar",
+      "tag": "no limits set",
+      "pos": [400, 700],
+      "size": [200, 76],
+      "sources": [
+        { "path": "services/parl-worker/service/worker.go", "line": 150, "label": "sequential two-stage compose" }
+      ]
+    },
+    {
+      "id": "tr",
+      "type": "external",
+      "label": "tooth-recognition",
+      "sublabel": "stage 1 · own LRO family",
+      "tag": "version-mapped",
+      "pos": [800, 640],
+      "size": [200, 70]
+    },
+    {
+      "id": "pd",
+      "type": "external",
+      "label": "parl-detection",
+      "sublabel": "stage 2 · own LRO family",
+      "tag": "version-mapped",
+      "pos": [800, 810],
+      "size": [200, 70]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Downstream LRO services", "wraps": ["tr", "pd"] }
+  ],
+  "connections": [
+    { "id": "submit", "from": "caller", "to": "lro", "label": "CreatePARL · GetOperation", "variant": "emphasis" },
+    { "id": "queue-sql", "from": "lro", "to": "db", "label": "FOR UPDATE SKIP LOCKED", "variant": "emphasis" },
+    { "id": "claim", "from": "worker", "to": "lro", "label": "Claim · Refresh · Release", "variant": "emphasis", "labelDy": -60 },
+    { "id": "stage1", "from": "worker", "to": "tr", "label": "stage 1 · Compute", "variant": "emphasis" },
+    { "id": "stage2", "from": "worker", "to": "pd", "label": "stage 2 · Compute", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "A composer, not a computer",
+      "items": [
+        "parl-worker owns no model and ships no Python container in its pod",
+        "It claims a work item, then drives two other LRO services to completion",
+        "cbct-anatomy-segmentation-worker is the only other MLE worker built this way"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "How the two stages join",
+      "items": [
+        "trResponse.GetResult() becomes the ToothRecognition field of the stage 2 request",
+        "Both stages also receive the same CbctVolumeId and ComputeMetadata",
+        "Polling is strictly sequential, GetOperation every 500ms, no parallel fan-out"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Version mapping is a hard gate",
+      "items": [
+        "worker.GetVersionMappings() resolves the requested semantic version per downstream",
+        "A missing mapping is a hard error, not a fallback to latest",
+        "The composed CreatePARLResponse is wrapped with anypb.New before it is stored"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Operations and drift",
+      "items": [
+        "parl is DIA-021 at 300s and parl-worker is DIA-022, the longest dia LRO budget",
+        "The worker Deployment declares no resources block, so it is unbounded on the node",
+        "The result reuses the LRO operationID verbatim as ResultId under STORAGE_PARL"
+      ]
+    }
+  ]
+}
